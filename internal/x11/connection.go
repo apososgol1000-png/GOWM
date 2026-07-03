@@ -1,0 +1,1 @@
+Conectarse al servidor X

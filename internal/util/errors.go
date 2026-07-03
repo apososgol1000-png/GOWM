@@ -1,0 +1,4 @@
+var ErrInvalidConfig
+var ErrWindowNotFound
+var ErrMonitorNotFound
+var ErrWorkspaceNotFound

@@ -1,0 +1,7 @@
+SetFloating()
+
+ToggleFloating()
+
+Move()
+
+Resize()
