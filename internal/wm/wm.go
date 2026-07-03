@@ -1,129 +1,109 @@
 package wm
 
 import (
-	"astralwm/internal/config"
-	"astralwm/internal/x11"
-	"errors"
-
-	"github.com/BurntSushi/xgb/xproto"
-	"github.com/BurntSushi/xgbutil"
+    "astralwm/internal/config"
+    "astralwm/internal/ipc"
+    "context"
+    "log"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "time"
 )
 
-// WM representa la instancia principal de AstralWM.
-type WM struct {
-	// Conexión con X11.
-	X *xgbutil.XUtil
-
-	// Configuración cargada.
-	Config *config.Config
-
-	// Estado del Window Manager.
-	Running bool
-
-	// Clientes administrados.
-	Clients map[xproto.Window]*Client
-
-	// Monitores disponibles.
-	Monitors []*Monitor
-
-	// Workspaces.
-	Workspaces []*Workspace
-
-	// Cliente enfocado.
-	Focused *Client
+type Manager struct {
+    cfg   *config.Config
+    reqCh chan ipc.Request
+    quit  chan struct{}
 }
 
-// New crea una nueva instancia del Window Manager.
-func New() (*WM, error) {
+func New() (*Manager, error) {
+    cfgPath := os.Getenv("ASTRALWM_CONFIG")
+    if cfgPath == "" {
+        home, _ := os.UserHomeDir()
+        cfgPath = filepath.Join(home, ".config", "astralwm", "config.json")
+    }
+    cfg, err := config.Load(cfgPath)
+    if err != nil {
+        cfg = config.Default()
+    }
+    if err := config.Validate(cfg); err != nil {
+        return nil, err
+    }
 
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, err
-	}
+    m := &Manager{
+        cfg:   cfg,
+        reqCh: make(chan ipc.Request, 32),
+        quit:  make(chan struct{}),
+    }
 
-	xu, err := x11.NewConnection()
-	if err != nil {
-		return nil, err
-	}
+    socket := "/tmp/astralwm.sock"
+    go func() {
+        if err := ipc.Start(m.reqCh, socket); err != nil {
+            log.Printf("ipc server stopped: %v", err)
+        }
+    }()
 
-	wm := &WM{
-		X:          xu,
-		Config:     cfg,
-		Running:    false,
-		Clients:    make(map[xproto.Window]*Client),
-		Monitors:   []*Monitor{},
-		Workspaces: []*Workspace{},
-		Focused:    nil,
-	}
-
-	return wm, nil
+    return m, nil
 }
 
-// Run inicia AstralWM.
-func (wm *WM) Run() error {
-
-	if wm.Running {
-		return errors.New("window manager ya iniciado")
-	}
-
-	wm.Running = true
-
-	if err := wm.Init(); err != nil {
-		return err
-	}
-
-	return wm.EventLoop()
+func (m *Manager) Run() error {
+    log.Printf("AstralWM (minimal) starting with cfg: %+v", m.cfg)
+    for {
+        select {
+        case req := <-m.reqCh:
+            m.handle(req)
+        case <-m.quit:
+            log.Println("AstralWM: shutting down")
+            return nil
+        }
+    }
 }
 
-// Stop detiene AstralWM.
-func (wm *WM) Stop() {
-
-	if !wm.Running {
-		return
-	}
-
-	wm.Running = false
-
-	if wm.X != nil {
-		wm.X.Conn().Close()
-	}
+func (m *Manager) handle(req ipc.Request) {
+    switch req.Command {
+    case "reload":
+        log.Println("handling reload")
+        m.reload()
+    case "spawn":
+        if len(req.Args) > 0 {
+            m.spawn(req.Args[0], req.Args[1:]...)
+        } else {
+            m.spawn(m.cfg.Terminal)
+        }
+    default:
+        log.Printf("unhandled command: %s (%v)", req.Command, req.Args)
+    }
 }
 
-// Init inicializa todos los subsistemas.
-func (wm *WM) Init() error {
-
-	if err := wm.InitMonitors(); err != nil {
-		return err
-	}
-
-	if err := wm.InitWorkspaces(); err != nil {
-		return err
-	}
-
-	if err := wm.RegisterEvents(); err != nil {
-		return err
-	}
-
-	if err := wm.RegisterKeybinds(); err != nil {
-		return err
-	}
-
-	if err := wm.StartIPC(); err != nil {
-		return err
-	}
-
-	return nil
+func (m *Manager) reload() {
+    cfgPath := os.Getenv("ASTRALWM_CONFIG")
+    if cfgPath == "" {
+        home, _ := os.UserHomeDir()
+        cfgPath = filepath.Join(home, ".config", "astralwm", "config.json")
+    }
+    if cfg, err := config.Load(cfgPath); err == nil {
+        if err := config.Validate(cfg); err == nil {
+            m.cfg = cfg
+            log.Println("config reloaded")
+            return
+        } else {
+            log.Println("config validation failed:", err)
+        }
+    } else {
+        log.Println("config load failed:", err)
+    }
 }
 
-// EventLoop inicia el bucle principal de eventos.
-func (wm *WM) EventLoop() error {
-
-	x11.MainLoop(wm.X)
-
-	return nil
-}
-
-// IsRunning indica si el WM sigue activo.
-func (wm *WM) IsRunning() bool {
-	return wm.Running
+func (m *Manager) spawn(cmd string, args ...string) {
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    c := exec.CommandContext(ctx, cmd, args...)
+    c.Stdout = os.Stdout
+    c.Stderr = os.Stderr
+    if err := c.Start(); err != nil {
+        log.Printf("spawn %s failed: %v", cmd, err)
+        return
+    }
+    log.Printf("spawned %s pid=%d", cmd, c.Process.Pid)
 }
