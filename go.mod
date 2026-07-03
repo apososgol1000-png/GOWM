@@ -1,5 +1,5 @@
 module astralwm
 
-go 1.24.4
+go 1.24
 
 require github.com/jezek/xgb v1.3.1
