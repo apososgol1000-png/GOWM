@@ -1,7 +1,6 @@
+package ipc
+
 type Request struct {
-
-    Command string
-
-    Args []string
-
+    Command string   `json:"command"`
+    Args    []string `json:"args"`
 }
